@@ -1,0 +1,13 @@
+version: '3.9'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: ./deploy/Dockerfile
+    image: inference:${INFERENCE_VERSION:-latest}
+    restart: always
+    env_file:
+    - .env
+    environment:
+      INFERENCE_HOST: 0.0.0.0

@@ -1,0 +1,77 @@
+version: "3.8"
+
+services:
+  minio:
+    image: minio/minio:${MINIO_VERSION}
+    networks:
+      - inference_network
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY}
+    volumes:
+      - storage-s3:/data:rw
+    entrypoint: sh
+    command: -c 'minio server --address ":9001" --console-address ":9000" /data'
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  createbuckets:
+    image: minio/mc
+    networks:
+      - inference_network
+    depends_on:
+      - minio
+    environment:
+      - MINIO_ACCESS_KEY=${S3_ACCESS_KEY_ID}
+      - MINIO_SECRET_KEY=${S3_SECRET_ACCESS_KEY}
+      - BUCKET_NAME=${S3_TRITON_BUCKET}
+      - ENDPOINT=http://minio:9001
+    volumes:
+      - ../data/:/tmp
+    entrypoint: >
+        /bin/sh -c "
+        /usr/bin/mc config host add myminio http://minio:9001 user password;
+        /usr/bin/mc mb myminio/${S3_TRITON_BUCKET};
+        /usr/bin/mc policy set public myminio/${S3_TRITON_BUCKET};
+        /usr/bin/mc cp --recursive /tmp/model_repository/ myminio/${S3_TRITON_BUCKET}/;
+        exit 0;
+        "
+
+  triton-server:
+    image: nvcr.io/nvidia/tritonserver:${TRITON_VERSION}
+    networks:
+      - inference_network
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS}
+    depends_on:
+      - createbuckets
+    command: ["tritonserver", "--strict-model-config=true", "--log-info=true", "--model-store=s3://minio:9001/${S3_TRITON_BUCKET}"]
+    shm_size: 10g
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/v2/health/ready" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  storage-s3:
+
+networks:
+  inference_network:
